@@ -15,7 +15,7 @@ along with this program.If not, see <http://www.gnu.org/licenses/>.
 #ifndef _CONFIG_h
 #define _CONFIG_h
 
-#define DEBUG                // if defined additional output is given
+//#define DEBUG                // if defined additional output is given
 #define DEBUGSERIAL Serial
 #define SERIALIO Serial1     // serial port for VESC-UART connection
 
