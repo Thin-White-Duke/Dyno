@@ -43,5 +43,6 @@ const int rs = 8, en = 9, d4 = 4, d5 = 5, d6 = 6, d7 = 7;
 
 // motor parameters
 #define POLE_PAIR 7
+#define DUTY 0.2
 
 #endif

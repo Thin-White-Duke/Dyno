@@ -3,6 +3,7 @@
 #include "VescUart.h"
 #include "datatypes.h"
 #include "TimerThree.h"
+#include "TimerFour.h"
 #include "TimerFive.h"
 #include <LiquidCrystal.h>
 
@@ -21,10 +22,12 @@ float controlValue = 0.0;
 // VESC UART communication
 struct bldcMeasure measuredVal;
 bool ioread = LOW;
+float time;
 
 // essential dyno values
+float duty;
 float rpm_el, rpm_mech;
-float U_mot, U_bat;
+float U_mot, U_bat, I_mot, I_bat;
 float P_batt, P_mot_el, P_mot_mech  ;
 float eta_vesc, eta_mot;
 
@@ -59,12 +62,16 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(STARTSTOP_PIN), startstop_toggle, FALLING);
 
   // interrupt timer for pwm signal for KSQ
-  Timer3.initialize(10000);          // initialize timer3 to 100Hz/10ms or higher
-  Timer3.pwm(PWM_PIN, 0);            // setup pwm on PWM_PIN, 0% duty cycle (1023 is 100%)
+  Timer3.initialize(10000);             // initialize timer3 to 100Hz/10ms or higher
+  Timer3.pwm(PWM_PIN, 0);               // setup pwm on PWM_PIN, 0% duty cycle (1023 is 100%)
+
+  // interrupt timer for data acquisition from VESC
+  //Timer4.initialize(1000000);            // initialize timer4 to 10Hz/100ms or higher
+  //Timer4.attachInterrupt(measure_val);  // attach timer routine
 
   // interrupt timer for output routine
-  Timer5.initialize(2000000);       // initialize timer and set a 2 second period
-  Timer5.attachInterrupt(lcd_out);  // attaches lcd_out() as a timer overflow interrupt
+  //Timer5.initialize(1000000);           // initialize timer5 and set a 1 second period
+  //Timer5.attachInterrupt(lcd_out);      // attaches lcd_out() as a timer overflow interrupt
 
   DEBUGSERIAL.begin(115200);
   SetDebugSerialPort(&DEBUGSERIAL);
@@ -101,36 +108,42 @@ void setup() {
 #endif
 
   DEBUGSERIAL.println();
-  DEBUGSERIAL.println("rpm\t\terpm\t\tTorque\t\tU_batt\t\tI_batt\t\tP_batt\t\tU_mot\t\tI_mot\t\tP_mot_mech\t\teta_mot");
+  DEBUGSERIAL.println("rpm\terpm\tTorque\tU_batt\tI_batt\tP_batt\tU_mot\tI_mot\tP_mot_mech\teta_mot");
 
 }
 
 void loop() {
 
-  weight_avg  = scale.get_tare(10);                    // read weight in gram
+  weight_avg  = scale.get_tare(5);                    // read weight in gram
   braketorque = 9.81*weight_avg/1000. * LEN_LEV/10.;   // moment in Ncm
   controlValue = mapfloat(analogRead(CONTROL_PIN), 0, 1023, 0, 1);
+
   ioread = VescUartGetValue(measuredVal);              // read current values from VESC
   if (!ioread) {
+    DEBUGSERIAL.println();
     DEBUGSERIAL.println("Failed to get data from VESC !!!");
     DEBUGSERIAL.println();
   }
-
-  rpm_el     = measuredVal.rpm;
-  rpm_mech   = rpm_el / POLE_PAIR;
+  duty       = (float)measuredVal.dutyNow;
+  rpm_el     = (float)measuredVal.rpm;
+  rpm_mech   = rpm_el / (float)POLE_PAIR;
+  I_bat      = measuredVal.avgInputCurrent;
   U_bat      = measuredVal.inpVoltage;
-  P_batt     = measuredVal.inpVoltage * measuredVal.avgInputCurrent;
+  P_batt     = U_bat * I_bat;
   //U_mot      = measuredVal.dutyNow * measuredVal.inpVoltage; // not reliable
-  U_mot      = P_batt / measuredVal.avgMotorCurrent;
-  P_mot_el   = U_mot * measuredVal.avgMotorCurrent;
+  I_mot      = measuredVal.avgMotorCurrent;
+  U_mot      = P_batt / I_mot;
+  P_mot_el   = U_mot * I_mot;
   P_mot_mech = 2 * PI * (braketorque + M_NULL)/100 * rpm_mech/60 ;
   eta_vesc   = P_mot_el / P_batt;
   eta_mot    = P_mot_mech / P_mot_el;
 
+  lcd_out();
+
   if (startstop_mode) {   // critical control actions should be put in here
     //VescUartSetRPM(2000.0);
     //VescUartSetCurrent(1.0);
-    VescUartSetDuty(0.5);
+    VescUartSetDuty(DUTY);
     // max weight, torque / current and min rpm (400) should not be exceeded
     // current must only be set when the motor rotates
     Timer3.setPwmDuty(PWM_PIN, map(analogRead(CONTROL_PIN), 0, 1023, 0, (int)CURR_TORQUE_MAX));
@@ -198,60 +211,67 @@ float mapfloat(long x, long in_min, long in_max, long out_min, long out_max) {
 }
 
 void lcd_out() {
-  lcd.clear();
-  lcd.setCursor(0,0);
-  //lcd.print(measuredVal.rpm,0);
-  lcd.print(rpm_mech,0);
-  lcd.print("rpm");
+  static int i=0;
+  i++;
 
-  lcd.setCursor(8,0);
-  //lcd.print(measuredVal.avgMotorCurrent,1);
-  lcd.print(measuredVal.avgInputCurrent,1);
-  lcd.print("A");
+  if (i % 10 == 0) {
+    lcd.clear();
+    lcd.setCursor(0,0);
+    //lcd.print(measuredVal.rpm,0);
+    lcd.print(rpm_mech,0);
+    lcd.print("rpm");
 
-  if (startstop_mode) {
-    lcd.setCursor(13,0);
-    lcd.print("ON");
+    lcd.setCursor(8,0);
+    lcd.print(measuredVal.avgMotorCurrent,1);
+    //lcd.print(measuredVal.avgInputCurrent,1);
+    lcd.print("A");
+
+    if (startstop_mode) {
+      lcd.setCursor(13,0);
+      lcd.print("ON");
+    }
+    else if (!startstop_mode) {
+      lcd.setCursor(13,0);
+      lcd.print("OFF");
+    }
+
+    lcd.setCursor(0,1);
+    lcd.print(braketorque, 1);
+    lcd.print("Ncm");
+
+    //lcd.setCursor(11,1);
+    //lcd.print(controlValue);
+    //lcd.print("%");
+
+    lcd.setCursor(11,1);
+    lcd.print(eta_mot*100,1);
+    lcd.print("%");
   }
-  else if (!startstop_mode) {
-    lcd.setCursor(13,0);
-    lcd.print("OFF");
+
+  if (i % 3 == 0) {
+    // data for further evaluation
+    //DEBUGSERIAL.println();
+    //DEBUGSERIAL.println("duty\trpm\terpm\tTorque\tU_batt\tI_batt\tP_batt\tU_mot\tI_mot\tP_mot_mech\teta_mot");
+    DEBUGSERIAL.print  (duty, 2);
+    DEBUGSERIAL.print  ("\t");
+    DEBUGSERIAL.print  (rpm_mech, 0);
+    DEBUGSERIAL.print  ("\t");
+    DEBUGSERIAL.print  (rpm_el, 0);
+    DEBUGSERIAL.print  ("\t");
+    DEBUGSERIAL.print  (braketorque, 1);
+    DEBUGSERIAL.print  ("\t");
+    DEBUGSERIAL.print  (U_bat, 2);
+    DEBUGSERIAL.print  ("\t");
+    DEBUGSERIAL.print  (I_bat, 2);
+    DEBUGSERIAL.print  ("\t");
+    DEBUGSERIAL.print  (P_batt, 2);
+    DEBUGSERIAL.print  ("\t");
+    DEBUGSERIAL.print  (U_mot, 2);
+    DEBUGSERIAL.print  ("\t");
+    DEBUGSERIAL.print  (I_mot, 2);
+    DEBUGSERIAL.print  ("\t");
+    DEBUGSERIAL.print  (P_mot_mech, 2);
+    DEBUGSERIAL.print  ("\t");
+    DEBUGSERIAL.println(eta_mot, 2);
   }
-
-  lcd.setCursor(0,1);
-  lcd.print(braketorque, 1);
-  lcd.print("Ncm");
-
-  //lcd.setCursor(11,1);
-  //lcd.print(controlValue);
-  //lcd.print("%");
-
-  lcd.setCursor(11,1);
-  lcd.print(eta_mot*100,1);
-  lcd.print("%");
-
-  // data for further evaluation
-  //DEBUGSERIAL.println();
-  //DEBUGSERIAL.println("duty\t\trpm\t\terpm\t\tTorque\t\tU_batt\t\tI_batt\t\tP_batt\t\tU_mot\t\tI_mot\t\tP_mot_mech\t\teta_mot");
-  DEBUGSERIAL.print  (measuredVal.dutyNow, 1);
-  DEBUGSERIAL.print  ("\t\t");
-  DEBUGSERIAL.print  (rpm_mech, 0);
-  DEBUGSERIAL.print  ("\t");
-  DEBUGSERIAL.print  (rpm_el, 0);
-  DEBUGSERIAL.print  ("\t\t");
-  DEBUGSERIAL.print  (braketorque, 1);
-  DEBUGSERIAL.print  ("\t\t\t");
-  DEBUGSERIAL.print  (U_bat, 1);
-  DEBUGSERIAL.print  ("\t\t\t");
-  DEBUGSERIAL.print  (measuredVal.avgInputCurrent, 1);
-  DEBUGSERIAL.print  ("\t\t\t");
-  DEBUGSERIAL.print  (P_batt, 1);
-  DEBUGSERIAL.print  ("\t\t\t");
-  DEBUGSERIAL.print  (U_mot, 1);
-  DEBUGSERIAL.print  ("\t\t\t");
-  DEBUGSERIAL.print  (measuredVal.avgMotorCurrent, 1);
-  DEBUGSERIAL.print  ("\t\t\t");
-  DEBUGSERIAL.print  (P_mot_mech, 1);
-  DEBUGSERIAL.print  ("\t\t\t\t\t");
-  DEBUGSERIAL.print  (eta_mot, 2);
 }
